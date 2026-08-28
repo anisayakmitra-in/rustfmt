@@ -121,8 +121,11 @@ fn rewrite_reorderable_or_regroupable_items(
                 span.hi(),
                 false,
             );
-            for (item, list_item) in normalized_items.iter_mut().zip(list_items) {
-                item.list_item = Some(list_item.clone());
+            for (item, mut list_item) in normalized_items.iter_mut().zip(list_items) {
+                if item.preserves_original() {
+                    list_item.post_comment = None;
+                }
+                item.list_item = Some(list_item);
             }
             normalized_items = normalize_use_trees_with_granularity(
                 normalized_items,

@@ -27,6 +27,11 @@ use self;
 use std::io::{self};
 use std::io::self;
 
+// #7051
+use std /* block comment */;
+use std // line comment
+;
+
 mod Foo {
     pub use rustc_ast::ast::{
         ItemForeignMod,

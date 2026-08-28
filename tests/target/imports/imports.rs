@@ -30,6 +30,11 @@ use {Bar /* comment */, /* Pre-comment! */ Foo};
 use std::io;
 use std::io::{self};
 
+// #7051
+use std; // block comment
+use std // line comment
+;
+
 mod Foo {
     pub use rustc_ast::ast::{
         ItemDefaultImpl, ItemForeignMod, ItemImpl, ItemMac, ItemMod, ItemStatic,

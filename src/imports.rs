@@ -44,16 +44,26 @@ impl<'a> FmtVisitor<'a> {
     pub(crate) fn format_import(&mut self, item: &ast::Item, tree: &ast::UseTree) {
         let span = item.span();
         let shape = self.shape();
-        let rw = UseTree::from_ast(
-            &self.get_context(),
-            tree,
-            None,
-            Some(item.vis.clone()),
-            Some(item.span.lo()),
-            Some(item.attrs.clone()),
-        )
-        .rewrite_top_level(&self.get_context(), shape)
-        .ok();
+        let import_end = self
+            .snippet_provider
+            .span_after(mk_sp(span.lo(), self.snippet_provider.end_pos()), ";");
+        let import_span = mk_sp(span.lo(), import_end);
+        let preserve_trailing_comment =
+            has_line_comment_before_semicolon(self.snippet(import_span));
+        let rw = if preserve_trailing_comment {
+            Some(self.snippet(import_span).to_owned())
+        } else {
+            UseTree::from_ast(
+                &self.get_context(),
+                tree,
+                None,
+                Some(item.vis.clone()),
+                Some(item.span.lo()),
+                Some(item.attrs.clone()),
+            )
+            .rewrite_top_level(&self.get_context(), shape)
+            .ok()
+        };
         match rw {
             Some(ref s) if s.is_empty() => {
                 // Format up to last newline
@@ -71,7 +81,11 @@ impl<'a> FmtVisitor<'a> {
             Some(ref s) => {
                 self.format_missing_with_indent(source!(self, span).lo());
                 self.push_str(s);
-                self.last_pos = source!(self, span).hi();
+                self.last_pos = if preserve_trailing_comment {
+                    import_end
+                } else {
+                    source!(self, span).hi()
+                };
             }
             None => {
                 self.format_missing_with_indent(source!(self, span).lo());
@@ -79,6 +93,17 @@ impl<'a> FmtVisitor<'a> {
             }
         }
     }
+}
+
+pub(crate) fn has_line_comment_before_semicolon(snippet: &str) -> bool {
+    let Some(semicolon) = snippet.rfind(';') else {
+        return false;
+    };
+    let prefix = snippet[..semicolon].trim_end();
+    prefix
+        .rsplit('\n')
+        .next()
+        .is_some_and(|line| line.contains("//"))
 }
 
 // Ordering of imports
@@ -126,6 +151,10 @@ pub(crate) struct UseTree {
     // Should we have another struct for top-level use items rather than reusing this?
     visibility: Option<ast::Visibility>,
     attrs: Option<ast::AttrVec>,
+    // Original top-level import text when a line comment separates the use tree
+    // from its semicolon. Rewriting that text would turn the comment into a
+    // comment on the rewritten semicolon and discard the actual terminator.
+    original: Option<String>,
 }
 
 impl PartialEq for UseTree {
@@ -335,12 +364,19 @@ impl fmt::Display for UseTree {
 }
 
 impl UseTree {
+    pub(crate) fn preserves_original(&self) -> bool {
+        self.original.is_some()
+    }
+
     // Rewrite use tree with `use ` and a trailing `;`.
     pub(crate) fn rewrite_top_level(
         &self,
         context: &RewriteContext<'_>,
         shape: Shape,
     ) -> RewriteResult {
+        if let Some(original) = &self.original {
+            return Ok(original.clone());
+        }
         let vis = self.visibility.as_ref().map_or(Cow::from(""), |vis| {
             crate::utils::format_visibility(context, vis)
         });
@@ -393,6 +429,7 @@ impl UseTree {
             list_item: None,
             visibility: None,
             attrs: None,
+            original: None,
         }
     }
 
@@ -401,8 +438,15 @@ impl UseTree {
         item: &ast::Item,
     ) -> Option<UseTree> {
         match item.kind {
-            ast::ItemKind::Use(ref use_tree) => Some(
-                UseTree::from_ast(
+            ast::ItemKind::Use(ref use_tree) => {
+                let import_end = context.snippet_provider.span_after(
+                    mk_sp(item.span.lo(), context.snippet_provider.end_pos()),
+                    ";",
+                );
+                let original = context.snippet(mk_sp(item.span.lo(), import_end));
+                let original =
+                    has_line_comment_before_semicolon(original).then(|| original.to_owned());
+                let mut result = UseTree::from_ast(
                     context,
                     use_tree,
                     None,
@@ -414,8 +458,10 @@ impl UseTree {
                         Some(item.attrs.clone())
                     },
                 )
-                .normalize(),
-            ),
+                .normalize();
+                result.original = original;
+                Some(result)
+            }
             _ => None,
         }
     }
@@ -439,6 +485,7 @@ impl UseTree {
             list_item,
             visibility,
             attrs,
+            original: None,
         };
 
         let leading_modsep =
@@ -654,7 +701,9 @@ impl UseTree {
     }
 
     fn contains_comment(&self) -> bool {
-        self.has_comment() || self.path.iter().any(|path| path.contains_comment())
+        self.original.is_some()
+            || self.has_comment()
+            || self.path.iter().any(|path| path.contains_comment())
     }
 
     fn same_visibility(&self, other: &UseTree) -> bool {
@@ -723,6 +772,7 @@ impl UseTree {
                                 ImportGranularity::Item => self.attrs.clone(),
                                 _ => None,
                             },
+                            original: None,
                         });
                     }
                 }
@@ -1263,6 +1313,7 @@ mod test {
                                 list_item: None,
                                 visibility: None,
                                 attrs: None,
+                                original: None,
                             };
                         }
                         ' ' => {
@@ -1289,6 +1340,7 @@ mod test {
                     list_item: None,
                     visibility: None,
                     attrs: None,
+                    original: None,
                 }
             }
 
